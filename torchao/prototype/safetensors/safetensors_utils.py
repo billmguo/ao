@@ -1,11 +1,17 @@
 import dataclasses
 import enum
+import inspect
 import json
 from typing import Any, Dict
 
 import torch
 
 import torchao
+from torchao.prototype.mx_formats.mx_tensor import MXTensor
+from torchao.prototype.mx_formats.nvfp4_tensor import (
+    NVFP4Tensor,
+    QuantizeTensorToNVFP4Kwargs,
+)
 from torchao.quantization import (
     Float8Tensor,
     Int4PlainInt32Tensor,
@@ -35,6 +41,9 @@ ALLOWED_CLASSES = {
     "KernelPreference": KernelPreference,
     "MappingType": MappingType,
     "Int4PlainInt32Tensor": Int4PlainInt32Tensor,
+    "MXTensor": MXTensor,
+    "NVFP4Tensor": NVFP4Tensor,
+    "QuantizeTensorToNVFP4Kwargs": QuantizeTensorToNVFP4Kwargs,
 }
 
 ALLOWED_TENSORS_SUBCLASSES = [
@@ -44,6 +53,8 @@ ALLOWED_TENSORS_SUBCLASSES = [
     "IntxUnpackedToInt8Tensor",
     "Int8Tensor",
     "Int4PlainInt32Tensor",
+    "MXTensor",
+    "NVFP4Tensor",
 ]
 
 __all__ = [
@@ -145,6 +156,28 @@ class TensorSubclassAttributeJSONEncoder(json.JSONEncoder):
         return value
 
 
+def get_attribute_to_param_mapping(cls):
+    sig = inspect.signature(cls.__new__)
+    param_names = set(sig.parameters.keys()) - {"cls"}
+
+    optional_tensor_attributes = (
+        cls.optional_tensor_attribute_names
+        if hasattr(cls, "optional_tensor_attribute_names")
+        else []
+    )
+
+    all_tensor_attributes = optional_tensor_attributes + cls.tensor_attribute_names
+    mapping = {}
+    for attr_name in all_tensor_attributes:
+        if attr_name in param_names:
+            continue
+        stripped_name = attr_name.lstrip("_")
+        if stripped_name in param_names:
+            mapping[attr_name] = stripped_name
+
+    return mapping
+
+
 def object_from_dict(data: Dict[str, Any]):
     if not isinstance(data, dict):
         raise TypeError(f"Expected dictionary, got {type(data)}")
@@ -208,6 +241,13 @@ def object_from_dict(data: Dict[str, Any]):
             }
         else:
             processed_data[key] = value
+
+    # Apply attribute-to-parameter name mapping for tensor subclasses
+    if type_path in ALLOWED_TENSORS_SUBCLASSES:
+        mapping = get_attribute_to_param_mapping(cls)
+        for old_key, new_key in mapping.items():
+            if old_key in processed_data:
+                processed_data[new_key] = processed_data.pop(old_key)
 
     # Create and return the instance
     try:
